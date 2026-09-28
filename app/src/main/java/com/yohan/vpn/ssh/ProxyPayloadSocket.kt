@@ -5,9 +5,8 @@ import java.net.InetSocketAddress
 import java.net.Socket
 
 /**
- * Matches DarkTunnel injector payload:
- * CONNECT [host_port] [protocol][crlf]Host: api.Snapchat.com[crlf][crlf]
- * → CONNECT host:port HTTP/1.1\r\nHost: payloadHost\r\n\r\n
+ * DarkTunnel exact payload:
+ * CONNECT host:port HTTP/1.0\r\nHost: api.Snapchat.com\r\n\r\n
  */
 object ProxyPayloadSocket {
 
@@ -24,9 +23,9 @@ object ProxyPayloadSocket {
         socket.connect(InetSocketAddress(proxyHost, proxyPort), timeoutMs)
         socket.soTimeout = timeoutMs
 
-        // Exact DarkTunnel expansion
+        // Match DarkTunnel log byte-for-byte style (HTTP/1.0)
         val payload =
-            "CONNECT $sshHost:$sshPort HTTP/1.1\r\n" +
+            "CONNECT $sshHost:$sshPort HTTP/1.0\r\n" +
             "Host: $payloadHost\r\n" +
             "\r\n"
 
@@ -40,14 +39,6 @@ object ProxyPayloadSocket {
             socket.close()
             throw Exception("البروكسي: $first")
         }
-        socket.soTimeout = 0
-        return socket
-    }
-
-    fun connectDirect(sshHost: String, sshPort: Int, timeoutMs: Int = 15000): Socket {
-        val socket = Socket()
-        socket.tcpNoDelay = true
-        socket.connect(InetSocketAddress(sshHost, sshPort), timeoutMs)
         socket.soTimeout = 0
         return socket
     }
