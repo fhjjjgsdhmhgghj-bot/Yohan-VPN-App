@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
 import android.provider.Settings
+import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -20,30 +21,31 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity() {
 
+    companion object {
+        private const val DEFAULT_API = "https://bot-production-8b57.up.railway.app"
+        private const val REQ_VPN = 1001
+    }
+
     private lateinit var binding: ActivityMainBinding
     private var servers: List<ServerInfo> = emptyList()
     private val profiles = Profile.values()
+    private var pendingAccount: com.yohan.vpn.data.AccountResult? = null
+    private var pendingProfile: Profile? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        // API URL ثابت من Railway — يُحمّل السيرفرات فور الدخول
+        binding.etApiUrl.setText(DEFAULT_API)
+        binding.etApiUrl.isEnabled = false
+        binding.etApiUrl.visibility = View.GONE
+
         binding.spinnerProfile.adapter = ArrayAdapter(
             this, android.R.layout.simple_spinner_dropdown_item,
             profiles.map { it.label }
         )
-
-        // default servers offline list
-        servers = listOf(
-            ServerInfo("de97", "ألمانيا E97"),
-            ServerInfo("de105", "ألمانيا E105"),
-            ServerInfo("fr113", "فرنسا E113"),
-            ServerInfo("fr220", "فرنسا E220"),
-            ServerInfo("uk17", "بريطانيا E17"),
-            ServerInfo("ae25", "الإمارات E25")
-        )
-        refreshServerSpinner()
 
         binding.btnConnect.setOnClickListener { startConnectFlow() }
         binding.btnDisconnect.setOnClickListener { disconnect() }
@@ -55,7 +57,54 @@ class MainActivity : AppCompatActivity() {
             }
         }
         binding.tvStatus.text = YohanVpnService.statusText
+
+        // سحب السيرفرات مباشرة عند فتح التطبيق
+        loadServersFromApi()
     }
+
+    private fun loadServersFromApi() {
+        binding.tvStatus.text = "جاري جلب السيرفرات..."
+        log("الاتصال بـ $DEFAULT_API ...")
+        lifecycleScope.launch {
+            try {
+                val list = withContext(Dispatchers.IO) {
+                    ApiClient.listServers(DEFAULT_API)
+                }
+                if (list.isEmpty()) {
+                    log("لم تُرجع الـ API سيرفرات — استخدام القائمة الاحتياطية")
+                    servers = fallbackServers()
+                    binding.tvStatus.text = "غير متصل (قائمة احتياطية)"
+                } else {
+                    servers = list
+                    log("تم جلب ${list.size} سيرفر")
+                    binding.tvStatus.text = "جاهز — ${list.size} سيرفر"
+                }
+                refreshServerSpinner()
+            } catch (e: Exception) {
+                log("خطأ جلب السيرفرات: ${e.message}")
+                servers = fallbackServers()
+                refreshServerSpinner()
+                binding.tvStatus.text = "غير متصل (وضع احتياطي)"
+                toast("تعذر الاتصال بالـ API — قائمة احتياطية")
+            }
+        }
+    }
+
+    private fun fallbackServers() = listOf(
+        ServerInfo("de97", "ألمانيا E97"),
+        ServerInfo("de105", "ألمانيا E105"),
+        ServerInfo("fr113", "فرنسا E113"),
+        ServerInfo("fr220", "فرنسا E220"),
+        ServerInfo("fr228", "فرنسا E228"),
+        ServerInfo("md9", "مولدوفا E9"),
+        ServerInfo("uk17", "بريطانيا E17"),
+        ServerInfo("uk171", "بريطانيا E171"),
+        ServerInfo("pl57", "بولندا E57"),
+        ServerInfo("pl129", "بولندا E129"),
+        ServerInfo("ae25", "الإمارات E25"),
+        ServerInfo("ae33", "الإمارات E33"),
+        ServerInfo("kz65", "كازاخستان E65")
+    )
 
     private fun refreshServerSpinner() {
         binding.spinnerServer.adapter = ArrayAdapter(
@@ -65,11 +114,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startConnectFlow() {
-        val apiUrl = binding.etApiUrl.text.toString().trim()
-        if (apiUrl.isEmpty()) {
-            toast("ضع رابط API من Railway")
-            return
-        }
         if (servers.isEmpty()) {
             toast("لا توجد سيرفرات")
             return
@@ -78,40 +122,30 @@ class MainActivity : AppCompatActivity() {
         val profile = profiles[binding.spinnerProfile.selectedItemPosition]
 
         binding.btnConnect.isEnabled = false
-        log("طلب حساب من API على ${server.key}...")
+        log("إنشاء حساب على ${server.name}...")
 
         lifecycleScope.launch {
             try {
-                // try refresh servers from API
-                val remote = withContext(Dispatchers.IO) {
-                    try { ApiClient.listServers(apiUrl) } catch (_: Exception) { emptyList() }
-                }
-                if (remote.isNotEmpty()) {
-                    servers = remote
-                    refreshServerSpinner()
-                }
-
                 val account = withContext(Dispatchers.IO) {
                     val uid = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
                         ?: "android-user"
-                    ApiClient.createAccount(apiUrl, server.key, uid)
+                    ApiClient.createAccount(DEFAULT_API, server.key, uid)
                 }
 
                 if (!account.ok) {
-                    log("فشل API: ${account.error}")
+                    log("فشل: ${account.error}")
                     toast(account.error ?: "فشل")
-                    binding.btnConnect.isEnabled = true
                     return@launch
                 }
 
                 log("حساب: ${account.username}@${account.host}")
                 log("بروكسي ${account.proxyHost}:${account.proxyPort} | ${profile.label}")
 
-                // VPN permission
                 val prepare = VpnService.prepare(this@MainActivity)
                 if (prepare != null) {
                     pendingAccount = account
                     pendingProfile = profile
+                    @Suppress("DEPRECATION")
                     startActivityForResult(prepare, REQ_VPN)
                 } else {
                     launchVpn(account, profile)
@@ -124,9 +158,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-
-    private var pendingAccount: com.yohan.vpn.data.AccountResult? = null
-    private var pendingProfile: Profile? = null
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -167,8 +198,4 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
-
-    companion object {
-        private const val REQ_VPN = 1001
-    }
 }
