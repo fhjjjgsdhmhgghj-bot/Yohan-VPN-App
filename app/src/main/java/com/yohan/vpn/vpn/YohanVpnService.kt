@@ -13,7 +13,8 @@ import androidx.core.app.NotificationCompat
 import com.yohan.vpn.ssh.ProxyPayloadSocket
 import com.yohan.vpn.ssh.SshTunnel
 import com.yohan.vpn.ui.MainActivity
-import java.net.Socket
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -39,6 +40,7 @@ class YohanVpnService : VpnService() {
 
     private var tun: ParcelFileDescriptor? = null
     private var tunnel: SshTunnel? = null
+    private var tun2socks: Tun2Socks? = null
     private val active = AtomicBoolean(false)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -81,13 +83,12 @@ class YohanVpnService : VpnService() {
         proxyPort: Int,
         payloadHost: String
     ) {
-        // Dropbear free accounts often use 109 (as in DarkTunnel)
-        val ports = linkedSetOf(preferredPort, 109, 22, 80, 443, 143, 444).toList()
-
+        val ports = linkedSetOf(preferredPort, 109, 22, 80, 443).toList()
         var lastErr: Exception? = null
+
         for (sshPort in ports) {
             try {
-                publish("نفق البروكسي → $host:$sshPort")
+                publish("بروكسي $proxyHost:$proxyPort → $host:$sshPort")
                 val socket = ProxyPayloadSocket.connectViaProxy(
                     proxyHost, proxyPort, host, sshPort, payloadHost
                 )
@@ -96,8 +97,9 @@ class YohanVpnService : VpnService() {
                 val ssh = SshTunnel()
                 val socksPort = ssh.connect(socket, host, user, pass, 18080)
                 tunnel = ssh
-                publish("SSH OK — تفعيل VPN...")
+                publish("SSH OK — تفعيل VPN + تمرير البيانات...")
 
+                // VPN interface — exclude private ranges optionally
                 val builder = Builder()
                     .setSession("Yohan VPN")
                     .setMtu(1500)
@@ -105,13 +107,26 @@ class YohanVpnService : VpnService() {
                     .addDnsServer("8.8.8.8")
                     .addDnsServer("1.1.1.1")
                     .addRoute("0.0.0.0", 0)
+                    // Don't route localhost
+                    .allowFamily(android.system.OsConstants.AF_INET)
 
-                tun = builder.establish()
+                try {
+                } catch (_: Exception) {}
+
+                val pfd = builder.establish()
                     ?: throw Exception("صلاحية VPN مرفوضة")
+                tun = pfd
+
+                // CRITICAL: forward TUN packets through SOCKS
+                val input = FileInputStream(pfd.fileDescriptor)
+                val output = FileOutputStream(pfd.fileDescriptor)
+                val t2s = Tun2Socks(input, output, "127.0.0.1", socksPort)
+                tun2socks = t2s
+                t2s.start()
 
                 active.set(true)
                 isRunning = true
-                publish("متصل ($host:$sshPort)")
+                publish("متصل — الإنترنت عبر النفق")
                 startForeground(1, buildNotification("متصل"))
 
                 while (active.get() && ssh.isConnected()) {
@@ -122,8 +137,12 @@ class YohanVpnService : VpnService() {
             } catch (e: Exception) {
                 lastErr = e
                 publish("منفذ $sshPort: ${e.message}")
+                try { tun2socks?.stop() } catch (_: Exception) {}
+                tun2socks = null
                 try { tunnel?.disconnect() } catch (_: Exception) {}
                 tunnel = null
+                try { tun?.close() } catch (_: Exception) {}
+                tun = null
             }
         }
         throw lastErr ?: Exception("تعذر الاتصال")
@@ -132,6 +151,8 @@ class YohanVpnService : VpnService() {
     private fun stopTunnel() {
         active.set(false)
         isRunning = false
+        try { tun2socks?.stop() } catch (_: Exception) {}
+        tun2socks = null
         try { tunnel?.disconnect() } catch (_: Exception) {}
         tunnel = null
         try { tun?.close() } catch (_: Exception) {}
