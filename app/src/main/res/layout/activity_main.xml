@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Yohan VPN"
+            android:textColor="@color/accent"
+            android:textSize="26sp"
+            android:textStyle="bold"
+            android:gravity="center" />
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="غير متصل"
+            android:textColor="@color/muted"
+            android:textSize="14sp"
+            android:gravity="center"
+            android:layout_marginTop="8dp"
+            android:layout_marginBottom="16dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="رابط الـ API (Railway)"
+            android:textColor="@color/muted"
+            android:textSize="12sp" />
+
+        <EditText
+            android:id="@+id/etApiUrl"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:hint="https://xxxx.up.railway.app"
+            android:textColor="@color/text"
+            android:textColorHint="@color/muted"
+            android:background="@color/surface"
+            android:padding="12dp"
+            android:inputType="textUri"
+            android:layout_marginBottom="12dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="السيرفر"
+            android:textColor="@color/muted"
+            android:textSize="12sp" />
+
+        <Spinner
+            android:id="@+id/spinnerServer"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:background="@color/surface"
+            android:layout_marginBottom="12dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="البروفايل"
+            android:textColor="@color/muted"
+            android:textSize="12sp" />
+
+        <Spinner
+            android:id="@+id/spinnerProfile"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:background="@color/surface"
+            android:layout_marginBottom="16dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnConnect"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="اتصال"
+            android:textColor="@color/text"
+            android:backgroundTint="@color/accent" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnDisconnect"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="قطع الاتصال"
+            android:layout_marginTop="8dp"
+            style="@style/Widget.Material3.Button.OutlinedButton" />
+
+        <TextView
+            android:id="@+id/tvLog"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/muted"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="16dp" />
+    </LinearLayout>
+</ScrollView>

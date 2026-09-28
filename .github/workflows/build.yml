@@ -1,0 +1,31 @@
+name: Build APK
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: temurin
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+      - run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools" 2>/dev/null || true
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          curl -sL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o /tmp/g.zip
+          unzip -q /tmp/g.zip -d /tmp
+          /tmp/gradle-8.7/bin/gradle wrapper --gradle-version 8.7
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YohanVPN-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
