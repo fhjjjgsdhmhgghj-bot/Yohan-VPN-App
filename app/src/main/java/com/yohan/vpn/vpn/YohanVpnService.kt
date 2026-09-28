@@ -10,13 +10,10 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.yohan.vpn.R
-import com.yohan.vpn.data.Profile
 import com.yohan.vpn.ssh.ProxyPayloadSocket
 import com.yohan.vpn.ssh.SshTunnel
 import com.yohan.vpn.ui.MainActivity
-import java.io.FileInputStream
-import java.io.FileOutputStream
+import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -37,7 +34,6 @@ class YohanVpnService : VpnService() {
             private set
         @Volatile var statusText = "غير متصل"
             private set
-
         var onStatus: ((String) -> Unit)? = null
     }
 
@@ -60,12 +56,12 @@ class YohanVpnService : VpnService() {
                 val proxyPort = intent.getIntExtra(EXTRA_PROXY_PORT, 443)
                 val payloadHost = intent.getStringExtra(EXTRA_PAYLOAD_HOST) ?: "youtube.com"
                 startForeground(1, buildNotification("جاري الاتصال..."))
-                thread(name = "vpn-connect") {
+                thread(name = "vpn-connect", isDaemon = false) {
                     try {
                         connect(host, user, pass, proxyHost, proxyPort, payloadHost)
                     } catch (e: Exception) {
                         Log.e("YohanVPN", "connect failed", e)
-                        publish("فشل: ${e.message}")
+                        publish("فشل الاتصال: ${e.message}")
                         stopTunnel()
                         stopSelf()
                     }
@@ -83,19 +79,34 @@ class YohanVpnService : VpnService() {
         proxyPort: Int,
         payloadHost: String
     ) {
-        publish("الاتصال بالبروكسي...")
-        val socket = ProxyPayloadSocket.connect(
-            proxyHost, proxyPort, host, 22, payloadHost
-        )
-        // Prevent VPN routing loop
-        protect(socket)
+        if (host.isBlank() || host.equals("unknown", true)) {
+            throw Exception("عنوان السيرفر غير صالح")
+        }
 
-        publish("فتح جلسة SSH...")
+        var socket: Socket? = null
+
+        // 1) محاولة عبر البروكسي + البايلود
+        publish("محاولة الاتصال عبر البروكسي...")
+        try {
+            socket = ProxyPayloadSocket.connect(proxyHost, proxyPort, host, 22, payloadHost)
+            publish("تم فتح نفق البروكسي")
+        } catch (e: Exception) {
+            publish("البروكسي غير متاح (${e.message})")
+            publish("محاولة اتصال مباشر بالسيرفر...")
+            socket = ProxyPayloadSocket.connectDirect(host, 22)
+            publish("تم الاتصال المباشر")
+        }
+
+        val sock = socket ?: throw Exception("تعذر فتح اتصال شبكي")
+        protect(sock)
+
+        publish("مصادقة SSH...")
         val ssh = SshTunnel()
-        val socksPort = ssh.connect(socket, host, user, pass, 18080)
+        val socksPort = ssh.connect(sock, host, user, pass, 18080)
         tunnel = ssh
+        publish("SSH جاهز — منفذ محلي $socksPort")
 
-        publish("إنشاء واجهة VPN...")
+        publish("تفعيل واجهة VPN...")
         val builder = Builder()
             .setSession("Yohan VPN")
             .setMtu(1500)
@@ -104,22 +115,18 @@ class YohanVpnService : VpnService() {
             .addDnsServer("1.1.1.1")
             .addRoute("0.0.0.0", 0)
 
-        // Exclude our own process routing for proxy if needed - protect already used
-
         tun = builder.establish()
-        if (tun == null) {
-            throw Exception("VPN permission denied or establish() failed")
-        }
+            ?: throw Exception("لم يتم منح صلاحية VPN")
 
         active.set(true)
         isRunning = true
-        publish("متصل ✓ (SOCKS :$socksPort)")
-        startForeground(1, buildNotification("متصل — $payloadHost"))
+        publish("متصل بنجاح")
+        startForeground(1, buildNotification("متصل"))
 
-        // Keep service alive while SSH session is up
         while (active.get() && ssh.isConnected()) {
             Thread.sleep(2000)
         }
+        if (active.get()) publish("انقطع اتصال SSH")
         stopTunnel()
     }
 
@@ -142,14 +149,12 @@ class YohanVpnService : VpnService() {
     private fun buildNotification(text: String): Notification {
         val channelId = "yohan_vpn"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val nm = getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(
+            getSystemService(NotificationManager::class.java).createNotificationChannel(
                 NotificationChannel(channelId, "Yohan VPN", NotificationManager.IMPORTANCE_LOW)
             )
         }
         val pi = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE
+            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
         )
         return NotificationCompat.Builder(this, channelId)
             .setContentTitle("Yohan VPN")

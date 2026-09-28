@@ -24,31 +24,12 @@
             android:id="@+id/tvStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="غير متصل"
+            android:text="جاري التحميل..."
             android:textColor="@color/muted"
             android:textSize="14sp"
             android:gravity="center"
             android:layout_marginTop="8dp"
-            android:layout_marginBottom="16dp" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="رابط الـ API (Railway)"
-            android:textColor="@color/muted"
-            android:textSize="12sp" />
-
-        <EditText
-            android:id="@+id/etApiUrl"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:hint="https://xxxx.up.railway.app"
-            android:textColor="@color/text"
-            android:textColorHint="@color/muted"
-            android:background="@color/surface"
-            android:padding="12dp"
-            android:inputType="textUri"
-            android:layout_marginBottom="12dp" />
+            android:layout_marginBottom="20dp" />
 
         <TextView
             android:layout_width="match_parent"

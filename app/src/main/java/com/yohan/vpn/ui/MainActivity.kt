@@ -5,13 +5,13 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
 import android.provider.Settings
-import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.yohan.vpn.databinding.ActivityMainBinding
 import com.yohan.vpn.data.ApiClient
+import com.yohan.vpn.data.LocalCache
 import com.yohan.vpn.data.Profile
 import com.yohan.vpn.data.ServerInfo
 import com.yohan.vpn.vpn.YohanVpnService
@@ -22,7 +22,7 @@ import kotlinx.coroutines.withContext
 class MainActivity : AppCompatActivity() {
 
     companion object {
-        private const val DEFAULT_API = "https://bot-production-8b57.up.railway.app"
+        private const val API = "https://bot-production-8b57.up.railway.app"
         private const val REQ_VPN = 1001
     }
 
@@ -37,11 +37,6 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // API URL ثابت من Railway — يُحمّل السيرفرات فور الدخول
-        binding.etApiUrl.setText(DEFAULT_API)
-        binding.etApiUrl.isEnabled = false
-        binding.etApiUrl.visibility = View.GONE
-
         binding.spinnerProfile.adapter = ArrayAdapter(
             this, android.R.layout.simple_spinner_dropdown_item,
             profiles.map { it.label }
@@ -53,57 +48,65 @@ class MainActivity : AppCompatActivity() {
         YohanVpnService.onStatus = { msg ->
             runOnUiThread {
                 binding.tvStatus.text = msg
-                binding.tvLog.append("$msg\n")
+                appendLog(msg)
             }
         }
         binding.tvStatus.text = YohanVpnService.statusText
 
-        // سحب السيرفرات مباشرة عند فتح التطبيق
-        loadServersFromApi()
+        // تحميل من الكاش فوراً ثم تحديث من الشبكة إن أمكن
+        val cached = LocalCache.loadServers(this)
+        if (cached.isNotEmpty()) {
+            servers = cached
+            refreshServerSpinner()
+            binding.tvStatus.text = "جاهز"
+            appendLog("تم تحميل ${cached.size} سيرفر من الذاكرة")
+        }
+        loadServers()
     }
 
-    private fun loadServersFromApi() {
-        binding.tvStatus.text = "جاري جلب السيرفرات..."
-        log("الاتصال بـ $DEFAULT_API ...")
+    private fun loadServers() {
         lifecycleScope.launch {
             try {
                 val list = withContext(Dispatchers.IO) {
-                    ApiClient.listServers(DEFAULT_API)
+                    ApiClient.listServers(API)
                 }
-                if (list.isEmpty()) {
-                    log("لم تُرجع الـ API سيرفرات — استخدام القائمة الاحتياطية")
-                    servers = fallbackServers()
-                    binding.tvStatus.text = "غير متصل (قائمة احتياطية)"
-                } else {
+                if (list.isNotEmpty()) {
                     servers = list
-                    log("تم جلب ${list.size} سيرفر")
-                    binding.tvStatus.text = "جاهز — ${list.size} سيرفر"
+                    LocalCache.saveServers(this@MainActivity, list)
+                    refreshServerSpinner()
+                    binding.tvStatus.text = "جاهز"
+                    appendLog("تم تحديث قائمة السيرفرات (${list.size})")
+                } else if (servers.isEmpty()) {
+                    servers = fallbackServers()
+                    LocalCache.saveServers(this@MainActivity, servers)
+                    refreshServerSpinner()
+                    binding.tvStatus.text = "جاهز"
                 }
-                refreshServerSpinner()
             } catch (e: Exception) {
-                log("خطأ جلب السيرفرات: ${e.message}")
-                servers = fallbackServers()
-                refreshServerSpinner()
-                binding.tvStatus.text = "غير متصل (وضع احتياطي)"
-                toast("تعذر الاتصال بالـ API — قائمة احتياطية")
+                if (servers.isEmpty()) {
+                    servers = LocalCache.loadServers(this@MainActivity).ifEmpty { fallbackServers() }
+                    refreshServerSpinner()
+                }
+                binding.tvStatus.text = "جاهز"
+                appendLog("استخدام السيرفرات المحفوظة")
             }
         }
     }
 
     private fun fallbackServers() = listOf(
-        ServerInfo("de97", "ألمانيا E97"),
-        ServerInfo("de105", "ألمانيا E105"),
-        ServerInfo("fr113", "فرنسا E113"),
-        ServerInfo("fr220", "فرنسا E220"),
-        ServerInfo("fr228", "فرنسا E228"),
-        ServerInfo("md9", "مولدوفا E9"),
-        ServerInfo("uk17", "بريطانيا E17"),
-        ServerInfo("uk171", "بريطانيا E171"),
-        ServerInfo("pl57", "بولندا E57"),
-        ServerInfo("pl129", "بولندا E129"),
-        ServerInfo("ae25", "الإمارات E25"),
-        ServerInfo("ae33", "الإمارات E33"),
-        ServerInfo("kz65", "كازاخستان E65")
+        ServerInfo("de97", "ألمانيا - فرانكفورت (E97)"),
+        ServerInfo("de105", "ألمانيا - فرانكفورت (E105)"),
+        ServerInfo("fr113", "فرنسا (E113)"),
+        ServerInfo("fr220", "فرنسا (E220)"),
+        ServerInfo("fr228", "فرنسا (E228)"),
+        ServerInfo("md9", "مولدوفا (E9)"),
+        ServerInfo("uk17", "المملكة المتحدة (E17)"),
+        ServerInfo("uk171", "المملكة المتحدة (E171)"),
+        ServerInfo("pl57", "بولندا (E57)"),
+        ServerInfo("pl129", "بولندا (E129)"),
+        ServerInfo("ae25", "الإمارات (E25)"),
+        ServerInfo("ae33", "الإمارات (E33)"),
+        ServerInfo("kz65", "كازاخستان (E65)")
     )
 
     private fun refreshServerSpinner() {
@@ -122,24 +125,40 @@ class MainActivity : AppCompatActivity() {
         val profile = profiles[binding.spinnerProfile.selectedItemPosition]
 
         binding.btnConnect.isEnabled = false
-        log("إنشاء حساب على ${server.name}...")
+        appendLog("السيرفر: ${server.name}")
+        appendLog("البروفايل: ${profile.label}")
 
         lifecycleScope.launch {
             try {
-                val account = withContext(Dispatchers.IO) {
-                    val uid = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
-                        ?: "android-user"
-                    ApiClient.createAccount(DEFAULT_API, server.key, uid)
+                // حساب محفوظ لنفس السيرفر؟
+                var account = LocalCache.loadValidAccount(
+                    this@MainActivity, server.key, profile.name
+                )
+                if (account != null) {
+                    appendLog("استخدام الحساب المحفوظ (${account.username})")
+                } else {
+                    appendLog("إنشاء حساب جديد...")
+                    account = withContext(Dispatchers.IO) {
+                        val uid = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+                            ?: "android-user"
+                        ApiClient.createAccount(API, server.key, uid)
+                    }
+                    if (!account.ok) {
+                        appendLog("تعذر إنشاء الحساب: ${account.error}")
+                        toast(account.error ?: "فشل")
+                        return@launch
+                    }
+                    if (account.host.isBlank() || account.host.equals("unknown", true)) {
+                        appendLog("السيرفر لم يُرجع عنواناً صالحاً")
+                        toast("فشل: عنوان السيرفر غير معروف")
+                        return@launch
+                    }
+                    LocalCache.saveAccount(this@MainActivity, account, server.key, profile.name)
+                    appendLog("تم حفظ الحساب محلياً")
                 }
 
-                if (!account.ok) {
-                    log("فشل: ${account.error}")
-                    toast(account.error ?: "فشل")
-                    return@launch
-                }
-
-                log("حساب: ${account.username}@${account.host}")
-                log("بروكسي ${account.proxyHost}:${account.proxyPort} | ${profile.label}")
+                appendLog("المضيف: ${account.host}")
+                appendLog("المستخدم: ${account.username}")
 
                 val prepare = VpnService.prepare(this@MainActivity)
                 if (prepare != null) {
@@ -151,7 +170,7 @@ class MainActivity : AppCompatActivity() {
                     launchVpn(account, profile)
                 }
             } catch (e: Exception) {
-                log("خطأ: ${e.message}")
+                appendLog("خطأ: ${e.message}")
                 toast(e.message ?: "error")
             } finally {
                 binding.btnConnect.isEnabled = true
@@ -167,7 +186,7 @@ class MainActivity : AppCompatActivity() {
             val p = pendingProfile
             if (a != null && p != null) launchVpn(a, p)
         } else if (requestCode == REQ_VPN) {
-            log("رفض صلاحية VPN")
+            appendLog("تم رفض صلاحية VPN")
         }
     }
 
@@ -183,18 +202,18 @@ class MainActivity : AppCompatActivity() {
             putExtra(YohanVpnService.EXTRA_PROFILE, profile.name)
         }
         startForegroundService(i)
-        log("بدء خدمة VPN...")
+        appendLog("بدء الاتصال...")
     }
 
     private fun disconnect() {
         startService(Intent(this, YohanVpnService::class.java).apply {
             action = YohanVpnService.ACTION_DISCONNECT
         })
-        log("قطع الاتصال...")
+        appendLog("قطع الاتصال...")
     }
 
-    private fun log(m: String) {
-        binding.tvLog.append("$m\n")
+    private fun appendLog(m: String) {
+        binding.tvLog.append("• $m\n")
     }
 
     private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
