@@ -142,11 +142,11 @@ class Tun2Socks(
             val udpLen = 8 + payload.size
             val total = ihl + udpLen
             val pkt = ByteArray(total)
-            pkt[0] = 0x45
+            pkt[0] = 0x45.toByte()
             pkt[2] = ((total ushr 8) and 0xff).toByte()
             pkt[3] = (total and 0xff).toByte()
-            pkt[8] = 64
-            pkt[9] = 17
+            pkt[8] = 64.toByte()
+            pkt[9] = 17.toByte()
             val src = java.net.InetAddress.getByName(dnsIp).address
             val dst = java.net.InetAddress.getByName(clientIp).address
             System.arraycopy(src, 0, pkt, 12, 4)
@@ -300,12 +300,12 @@ private class TcpSession(
             val total = ihl + tcpLen
             val pkt = ByteArray(total)
             // IP header
-            pkt[0] = 0x45
+            pkt[0] = 0x45.toByte()
             pkt[2] = ((total ushr 8) and 0xff).toByte()
             pkt[3] = (total and 0xff).toByte()
-            pkt[6] = 0x40 // DF
-            pkt[8] = 64
-            pkt[9] = 6 // TCP
+            pkt[6] = 0x40.toByte() // DF
+            pkt[8] = 64.toByte()
+            pkt[9] = 6.toByte() // TCP
             val src = InetAddress.getByName(destIp).address
             val dst = InetAddress.getByName(clientIp).address
             System.arraycopy(src, 0, pkt, 12, 4)
@@ -328,10 +328,10 @@ private class TcpSession(
             pkt[t + 9] = ((ack ushr 16) and 0xff).toByte()
             pkt[t + 10] = ((ack ushr 8) and 0xff).toByte()
             pkt[t + 11] = (ack and 0xff).toByte()
-            pkt[t + 12] = 0x50 // data offset 5
+            pkt[t + 12] = 0x50.toByte() // data offset 5
             pkt[t + 13] = flags.toByte()
-            pkt[t + 14] = 0x16
-            pkt[t + 15] = 0xd0 // window
+            pkt[t + 14] = 0x16.toByte()
+            pkt[t + 15] = 0xd0.toByte() // window
             if (payload.isNotEmpty()) {
                 System.arraycopy(payload, 0, pkt, t + 20, payload.size)
             }
