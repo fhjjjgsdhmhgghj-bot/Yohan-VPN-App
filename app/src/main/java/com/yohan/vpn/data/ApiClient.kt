@@ -49,11 +49,29 @@ object ApiClient {
                         if (json.has("retry_after")) " (${json.optString("retry_after")})" else ""
                 )
             }
+            val host = json.optString("host").trim()
+            val user = json.optString("username").trim()
+            val pass = json.optString("password").trim()
+            val port = json.optInt("port", 109).let { if (it in 1..65535) it else 109 }
+
+            // Reject clearly wrong fields
+            if (host.isEmpty() || host.equals("unknown", true)) {
+                return AccountResult(false, error = "عنوان السيرفر غير صالح")
+            }
+            if (user.isEmpty() || user.contains(".") && user.contains("vpn")) {
+                // domain-like username is wrong
+                return AccountResult(false, error = "اسم المستخدم غير صالح: $user")
+            }
+            if (pass.isEmpty()) {
+                return AccountResult(false, error = "كلمة المرور فارغة")
+            }
+
             return AccountResult(
                 ok = true,
-                host = json.optString("host"),
-                username = json.optString("username"),
-                password = json.optString("password"),
+                host = host,
+                username = user,
+                password = pass,
+                sshPort = port,
                 proxyHost = json.optString("proxy_host", "34.43.46.91"),
                 proxyPort = json.optInt("proxy_port", 443)
             )

@@ -37,6 +37,9 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        // امسح الحسابات القديمة الخاطئة مرة واحدة
+        LocalCache.clearAccount(this)
+
         binding.spinnerProfile.adapter = ArrayAdapter(
             this, android.R.layout.simple_spinner_dropdown_item,
             profiles.map { it.label }
@@ -53,13 +56,12 @@ class MainActivity : AppCompatActivity() {
         }
         binding.tvStatus.text = YohanVpnService.statusText
 
-        // تحميل من الكاش فوراً ثم تحديث من الشبكة إن أمكن
         val cached = LocalCache.loadServers(this)
         if (cached.isNotEmpty()) {
             servers = cached
             refreshServerSpinner()
             binding.tvStatus.text = "جاهز"
-            appendLog("تم تحميل ${cached.size} سيرفر من الذاكرة")
+            appendLog("سيرفرات محفوظة: ${cached.size}")
         }
         loadServers()
     }
@@ -67,28 +69,25 @@ class MainActivity : AppCompatActivity() {
     private fun loadServers() {
         lifecycleScope.launch {
             try {
-                val list = withContext(Dispatchers.IO) {
-                    ApiClient.listServers(API)
-                }
+                val list = withContext(Dispatchers.IO) { ApiClient.listServers(API) }
                 if (list.isNotEmpty()) {
                     servers = list
                     LocalCache.saveServers(this@MainActivity, list)
                     refreshServerSpinner()
                     binding.tvStatus.text = "جاهز"
-                    appendLog("تم تحديث قائمة السيرفرات (${list.size})")
+                    appendLog("تم تحديث السيرفرات (${list.size})")
                 } else if (servers.isEmpty()) {
                     servers = fallbackServers()
                     LocalCache.saveServers(this@MainActivity, servers)
                     refreshServerSpinner()
                     binding.tvStatus.text = "جاهز"
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 if (servers.isEmpty()) {
                     servers = LocalCache.loadServers(this@MainActivity).ifEmpty { fallbackServers() }
                     refreshServerSpinner()
                 }
                 binding.tvStatus.text = "جاهز"
-                appendLog("استخدام السيرفرات المحفوظة")
             }
         }
     }
@@ -130,12 +129,9 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             try {
-                // حساب محفوظ لنفس السيرفر؟
-                var account = LocalCache.loadValidAccount(
-                    this@MainActivity, server.key, profile.name
-                )
+                var account = LocalCache.loadValidAccount(this@MainActivity, server.key)
                 if (account != null) {
-                    appendLog("استخدام الحساب المحفوظ (${account.username})")
+                    appendLog("حساب محفوظ: ${account.username}")
                 } else {
                     appendLog("إنشاء حساب جديد...")
                     account = withContext(Dispatchers.IO) {
@@ -144,21 +140,18 @@ class MainActivity : AppCompatActivity() {
                         ApiClient.createAccount(API, server.key, uid)
                     }
                     if (!account.ok) {
-                        appendLog("تعذر إنشاء الحساب: ${account.error}")
+                        appendLog("فشل الإنشاء: ${account.error}")
                         toast(account.error ?: "فشل")
                         return@launch
                     }
-                    if (account.host.isBlank() || account.host.equals("unknown", true)) {
-                        appendLog("السيرفر لم يُرجع عنواناً صالحاً")
-                        toast("فشل: عنوان السيرفر غير معروف")
-                        return@launch
-                    }
-                    LocalCache.saveAccount(this@MainActivity, account, server.key, profile.name)
-                    appendLog("تم حفظ الحساب محلياً")
+                    LocalCache.saveAccount(this@MainActivity, account, server.key)
+                    appendLog("تم حفظ الحساب")
                 }
 
-                appendLog("المضيف: ${account.host}")
+                appendLog("المضيف: ${account.host}:${account.sshPort}")
                 appendLog("المستخدم: ${account.username}")
+                appendLog("البروكسي: ${account.proxyHost}:${account.proxyPort}")
+                appendLog("البايلود Host: ${profile.payloadHost}")
 
                 val prepare = VpnService.prepare(this@MainActivity)
                 if (prepare != null) {
@@ -196,10 +189,10 @@ class MainActivity : AppCompatActivity() {
             putExtra(YohanVpnService.EXTRA_HOST, account.host)
             putExtra(YohanVpnService.EXTRA_USER, account.username)
             putExtra(YohanVpnService.EXTRA_PASS, account.password)
+            putExtra(YohanVpnService.EXTRA_SSH_PORT, account.sshPort)
             putExtra(YohanVpnService.EXTRA_PROXY_HOST, account.proxyHost)
             putExtra(YohanVpnService.EXTRA_PROXY_PORT, account.proxyPort)
             putExtra(YohanVpnService.EXTRA_PAYLOAD_HOST, profile.payloadHost)
-            putExtra(YohanVpnService.EXTRA_PROFILE, profile.name)
         }
         startForegroundService(i)
         appendLog("بدء الاتصال...")

@@ -25,10 +25,10 @@ class YohanVpnService : VpnService() {
         const val EXTRA_HOST = "host"
         const val EXTRA_USER = "user"
         const val EXTRA_PASS = "pass"
+        const val EXTRA_SSH_PORT = "ssh_port"
         const val EXTRA_PROXY_HOST = "proxy_host"
         const val EXTRA_PROXY_PORT = "proxy_port"
         const val EXTRA_PAYLOAD_HOST = "payload_host"
-        const val EXTRA_PROFILE = "profile"
 
         @Volatile var isRunning = false
             private set
@@ -52,16 +52,17 @@ class YohanVpnService : VpnService() {
                 val host = intent.getStringExtra(EXTRA_HOST) ?: return START_NOT_STICKY
                 val user = intent.getStringExtra(EXTRA_USER) ?: return START_NOT_STICKY
                 val pass = intent.getStringExtra(EXTRA_PASS) ?: return START_NOT_STICKY
+                val sshPortPreferred = intent.getIntExtra(EXTRA_SSH_PORT, 109)
                 val proxyHost = intent.getStringExtra(EXTRA_PROXY_HOST) ?: "34.43.46.91"
                 val proxyPort = intent.getIntExtra(EXTRA_PROXY_PORT, 443)
                 val payloadHost = intent.getStringExtra(EXTRA_PAYLOAD_HOST) ?: "youtube.com"
                 startForeground(1, buildNotification("جاري الاتصال..."))
-                thread(name = "vpn-connect", isDaemon = false) {
+                thread(name = "vpn-connect") {
                     try {
-                        connect(host, user, pass, proxyHost, proxyPort, payloadHost)
+                        connect(host, user, pass, sshPortPreferred, proxyHost, proxyPort, payloadHost)
                     } catch (e: Exception) {
                         Log.e("YohanVPN", "connect failed", e)
-                        publish("فشل الاتصال: ${e.message}")
+                        publish("فشل: ${e.message}")
                         stopTunnel()
                         stopSelf()
                     }
@@ -75,59 +76,57 @@ class YohanVpnService : VpnService() {
         host: String,
         user: String,
         pass: String,
+        preferredPort: Int,
         proxyHost: String,
         proxyPort: Int,
         payloadHost: String
     ) {
-        if (host.isBlank() || host.equals("unknown", true)) {
-            throw Exception("عنوان السيرفر غير صالح")
+        // Dropbear free accounts often use 109 (as in DarkTunnel)
+        val ports = linkedSetOf(preferredPort, 109, 22, 80, 443, 143, 444).toList()
+
+        var lastErr: Exception? = null
+        for (sshPort in ports) {
+            try {
+                publish("نفق البروكسي → $host:$sshPort")
+                val socket = ProxyPayloadSocket.connectViaProxy(
+                    proxyHost, proxyPort, host, sshPort, payloadHost
+                )
+                protect(socket)
+                publish("نفق مفتوح — مصادقة SSH...")
+                val ssh = SshTunnel()
+                val socksPort = ssh.connect(socket, host, user, pass, 18080)
+                tunnel = ssh
+                publish("SSH OK — تفعيل VPN...")
+
+                val builder = Builder()
+                    .setSession("Yohan VPN")
+                    .setMtu(1500)
+                    .addAddress("10.8.0.2", 32)
+                    .addDnsServer("8.8.8.8")
+                    .addDnsServer("1.1.1.1")
+                    .addRoute("0.0.0.0", 0)
+
+                tun = builder.establish()
+                    ?: throw Exception("صلاحية VPN مرفوضة")
+
+                active.set(true)
+                isRunning = true
+                publish("متصل ($host:$sshPort)")
+                startForeground(1, buildNotification("متصل"))
+
+                while (active.get() && ssh.isConnected()) {
+                    Thread.sleep(2000)
+                }
+                stopTunnel()
+                return
+            } catch (e: Exception) {
+                lastErr = e
+                publish("منفذ $sshPort: ${e.message}")
+                try { tunnel?.disconnect() } catch (_: Exception) {}
+                tunnel = null
+            }
         }
-
-        var socket: Socket? = null
-
-        // 1) محاولة عبر البروكسي + البايلود
-        publish("محاولة الاتصال عبر البروكسي...")
-        try {
-            socket = ProxyPayloadSocket.connect(proxyHost, proxyPort, host, 22, payloadHost)
-            publish("تم فتح نفق البروكسي")
-        } catch (e: Exception) {
-            publish("البروكسي غير متاح (${e.message})")
-            publish("محاولة اتصال مباشر بالسيرفر...")
-            socket = ProxyPayloadSocket.connectDirect(host, 22)
-            publish("تم الاتصال المباشر")
-        }
-
-        val sock = socket ?: throw Exception("تعذر فتح اتصال شبكي")
-        protect(sock)
-
-        publish("مصادقة SSH...")
-        val ssh = SshTunnel()
-        val socksPort = ssh.connect(sock, host, user, pass, 18080)
-        tunnel = ssh
-        publish("SSH جاهز — منفذ محلي $socksPort")
-
-        publish("تفعيل واجهة VPN...")
-        val builder = Builder()
-            .setSession("Yohan VPN")
-            .setMtu(1500)
-            .addAddress("10.8.0.2", 32)
-            .addDnsServer("8.8.8.8")
-            .addDnsServer("1.1.1.1")
-            .addRoute("0.0.0.0", 0)
-
-        tun = builder.establish()
-            ?: throw Exception("لم يتم منح صلاحية VPN")
-
-        active.set(true)
-        isRunning = true
-        publish("متصل بنجاح")
-        startForeground(1, buildNotification("متصل"))
-
-        while (active.get() && ssh.isConnected()) {
-            Thread.sleep(2000)
-        }
-        if (active.get()) publish("انقطع اتصال SSH")
-        stopTunnel()
+        throw lastErr ?: Exception("تعذر الاتصال")
     }
 
     private fun stopTunnel() {

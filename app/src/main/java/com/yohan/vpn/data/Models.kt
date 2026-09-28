@@ -7,6 +7,7 @@ data class AccountResult(
     val host: String = "",
     val username: String = "",
     val password: String = "",
+    val sshPort: Int = 109,
     val proxyHost: String = "34.43.46.91",
     val proxyPort: Int = 443,
     val error: String? = null
