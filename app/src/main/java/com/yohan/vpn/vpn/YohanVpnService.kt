@@ -120,7 +120,7 @@ class YohanVpnService : VpnService() {
                 // CRITICAL: forward TUN packets through SOCKS
                 val input = FileInputStream(pfd.fileDescriptor)
                 val output = FileOutputStream(pfd.fileDescriptor)
-                val t2s = Tun2Socks(input, output, "127.0.0.1", socksPort)
+                val t2s = Tun2Socks(input, output, "127.0.0.1", socksPort) { ds -> protect(ds) }
                 tun2socks = t2s
                 t2s.start()
 

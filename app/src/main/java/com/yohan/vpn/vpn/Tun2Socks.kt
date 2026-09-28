@@ -22,7 +22,8 @@ class Tun2Socks(
     private val tunIn: FileInputStream,
     private val tunOut: FileOutputStream,
     private val socksHost: String = "127.0.0.1",
-    private val socksPort: Int
+    private val socksPort: Int,
+    private val protectSocket: ((java.net.DatagramSocket) -> Boolean)? = null
 ) {
     private val running = AtomicBoolean(false)
     private val sessions = ConcurrentHashMap<String, TcpSession>()
@@ -111,11 +112,71 @@ class Tun2Socks(
     }
 
     private fun handleUdp(buf: ByteArray, len: Int, ihl: Int, srcIp: String, dstIp: String) {
-        // Only try DNS (53) via TCP-over-SOCKS is hard; skip UDP for stability
-        // Device uses VPN DNS 8.8.8.8 — without UDP associate DNS may fail.
-        // Simple: open SOCKS TCP to 8.8.8.8:53 is not standard DNS.
-        // Leave UDP dropped; many apps use DoH. For basic web, TCP is enough
-        // if we also spoof DNS... skip for now.
+        if (len < ihl + 8) return
+        val srcPort = ((buf[ihl].toInt() and 0xff) shl 8) or (buf[ihl + 1].toInt() and 0xff)
+        val dstPort = ((buf[ihl + 2].toInt() and 0xff) shl 8) or (buf[ihl + 3].toInt() and 0xff)
+        if (dstPort != 53) return // DNS only
+        val payloadOff = ihl + 8
+        val dnsQuery = buf.copyOfRange(payloadOff, len)
+        thread(name = "dns-fwd", isDaemon = true) {
+            try {
+                val ds = java.net.DatagramSocket()
+                protectSocket?.invoke(ds)
+                ds.soTimeout = 5000
+                val server = java.net.InetSocketAddress(dstIp, 53)
+                ds.send(java.net.DatagramPacket(dnsQuery, dnsQuery.size, server))
+                val respBuf = ByteArray(4096)
+                val resp = java.net.DatagramPacket(respBuf, respBuf.size)
+                ds.receive(resp)
+                ds.close()
+                writeUdpReply(srcIp, srcPort, dstIp, dstPort, resp.data.copyOf(resp.length))
+            } catch (e: Exception) {
+                Log.w("Tun2Socks", "dns: ${e.message}")
+            }
+        }
+    }
+
+    private fun writeUdpReply(clientIp: String, clientPort: Int, dnsIp: String, dnsPort: Int, payload: ByteArray) {
+        try {
+            val ihl = 20
+            val udpLen = 8 + payload.size
+            val total = ihl + udpLen
+            val pkt = ByteArray(total)
+            pkt[0] = 0x45
+            pkt[2] = ((total ushr 8) and 0xff).toByte()
+            pkt[3] = (total and 0xff).toByte()
+            pkt[8] = 64
+            pkt[9] = 17
+            val src = java.net.InetAddress.getByName(dnsIp).address
+            val dst = java.net.InetAddress.getByName(clientIp).address
+            System.arraycopy(src, 0, pkt, 12, 4)
+            System.arraycopy(dst, 0, pkt, 16, 4)
+            var sum = 0
+            var i = 0
+            while (i < 20) {
+                if (i == 10) { i += 2; continue }
+                sum += ((pkt[i].toInt() and 0xff) shl 8) or (pkt[i + 1].toInt() and 0xff)
+                i += 2
+            }
+            while (sum ushr 16 != 0) sum = (sum and 0xffff) + (sum ushr 16)
+            val csum = sum.inv() and 0xffff
+            pkt[10] = ((csum ushr 8) and 0xff).toByte()
+            pkt[11] = (csum and 0xff).toByte()
+            val u = 20
+            pkt[u] = ((dnsPort ushr 8) and 0xff).toByte()
+            pkt[u + 1] = (dnsPort and 0xff).toByte()
+            pkt[u + 2] = ((clientPort ushr 8) and 0xff).toByte()
+            pkt[u + 3] = (clientPort and 0xff).toByte()
+            pkt[u + 4] = ((udpLen ushr 8) and 0xff).toByte()
+            pkt[u + 5] = (udpLen and 0xff).toByte()
+            System.arraycopy(payload, 0, pkt, u + 8, payload.size)
+            synchronized(tunOut) {
+                tunOut.write(pkt)
+                tunOut.flush()
+            }
+        } catch (e: Exception) {
+            Log.w("Tun2Socks", "udp reply: ${e.message}")
+        }
     }
 
     private fun inetString(buf: ByteArray, off: Int): String {
