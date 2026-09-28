@@ -58,8 +58,7 @@ object ApiClient {
             if (host.isEmpty() || host.equals("unknown", true)) {
                 return AccountResult(false, error = "عنوان السيرفر غير صالح")
             }
-            if (user.isEmpty() || user.contains(".") && user.contains("vpn")) {
-                // domain-like username is wrong
+            if (user.isEmpty() || user.contains("vpn.com", ignoreCase = true) || user.count { it == '.' } >= 2) {
                 return AccountResult(false, error = "اسم المستخدم غير صالح: $user")
             }
             if (pass.isEmpty()) {
