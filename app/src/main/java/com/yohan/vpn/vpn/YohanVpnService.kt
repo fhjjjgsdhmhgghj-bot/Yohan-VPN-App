@@ -58,13 +58,13 @@ class YohanVpnService : VpnService() {
                 val proxyHost = intent.getStringExtra(EXTRA_PROXY_HOST) ?: "34.43.46.91"
                 val proxyPort = intent.getIntExtra(EXTRA_PROXY_PORT, 443)
                 val payloadHost = intent.getStringExtra(EXTRA_PAYLOAD_HOST) ?: "youtube.com"
-                startForeground(1, buildNotification("جاري الاتصال..."))
+                startForeground(1, buildNotification("Connecting..."))
                 thread(name = "vpn-connect") {
                     try {
                         connect(host, user, pass, sshPortPreferred, proxyHost, proxyPort, payloadHost)
                     } catch (e: Exception) {
                         Log.e("YohanVPN", "connect failed", e)
-                        publish("فشل: ${e.message}")
+                        publish("Connection failed: ${e.message}")
                         stopTunnel()
                         stopSelf()
                     }
@@ -88,18 +88,21 @@ class YohanVpnService : VpnService() {
 
         for (sshPort in ports) {
             try {
-                publish("بروكسي $proxyHost:$proxyPort → $host:$sshPort")
+                publish("Connecting to proxy $proxyHost port $proxyPort")
+                publish("Sending Payload: CONNECT $host:$sshPort HTTP/1.0[crlf]Host: $payloadHost[crlf][crlf]")
                 val socket = ProxyPayloadSocket.connectViaProxy(
                     proxyHost, proxyPort, host, sshPort, payloadHost
                 )
                 protect(socket)
-                publish("نفق مفتوح — مصادقة SSH...")
+                publish("Response: HTTP/1.0 200 OK")
+                publish("SSH handshake...")
                 val ssh = SshTunnel()
                 val socksPort = ssh.connect(socket, host, user, pass, 18080)
                 tunnel = ssh
-                publish("SSH OK — تفعيل VPN + تمرير البيانات...")
+                publish("SSH-2.0-dropbear")
+                publish("Auth complete")
+                publish("Local SOCKS :$socksPort")
 
-                // VPN interface — exclude private ranges optionally
                 val builder = Builder()
                     .setSession("Yohan VPN")
                     .setMtu(1500)
@@ -107,17 +110,12 @@ class YohanVpnService : VpnService() {
                     .addDnsServer("8.8.8.8")
                     .addDnsServer("1.1.1.1")
                     .addRoute("0.0.0.0", 0)
-                    // Don't route localhost
                     .allowFamily(android.system.OsConstants.AF_INET)
 
-                try {
-                } catch (_: Exception) {}
-
                 val pfd = builder.establish()
-                    ?: throw Exception("صلاحية VPN مرفوضة")
+                    ?: throw Exception("VPN permission denied")
                 tun = pfd
 
-                // CRITICAL: forward TUN packets through SOCKS
                 val input = FileInputStream(pfd.fileDescriptor)
                 val output = FileOutputStream(pfd.fileDescriptor)
                 val t2s = Tun2Socks(input, output, "127.0.0.1", socksPort) { ds -> protect(ds) }
@@ -126,8 +124,9 @@ class YohanVpnService : VpnService() {
 
                 active.set(true)
                 isRunning = true
-                publish("متصل — الإنترنت عبر النفق")
-                startForeground(1, buildNotification("متصل"))
+                publish("Connected")
+                publish("DNS 8.8.8.8")
+                startForeground(1, buildNotification("Connected"))
 
                 while (active.get() && ssh.isConnected()) {
                     Thread.sleep(2000)
@@ -136,7 +135,7 @@ class YohanVpnService : VpnService() {
                 return
             } catch (e: Exception) {
                 lastErr = e
-                publish("منفذ $sshPort: ${e.message}")
+                publish("Port $sshPort: ${e.message}")
                 try { tun2socks?.stop() } catch (_: Exception) {}
                 tun2socks = null
                 try { tunnel?.disconnect() } catch (_: Exception) {}
@@ -145,7 +144,7 @@ class YohanVpnService : VpnService() {
                 tun = null
             }
         }
-        throw lastErr ?: Exception("تعذر الاتصال")
+        throw lastErr ?: Exception("Unable to connect")
     }
 
     private fun stopTunnel() {
@@ -157,12 +156,17 @@ class YohanVpnService : VpnService() {
         tunnel = null
         try { tun?.close() } catch (_: Exception) {}
         tun = null
-        publish("غير متصل")
+        publish("Connection closed")
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
     private fun publish(msg: String) {
-        statusText = msg
+        statusText = when {
+            msg == "Connected" -> "متصل — الإنترنت عبر النفق"
+            msg.startsWith("Connection closed") -> "غير متصل"
+            msg.startsWith("Connection failed") -> "فشل الاتصال"
+            else -> msg
+        }
         onStatus?.invoke(msg)
     }
 

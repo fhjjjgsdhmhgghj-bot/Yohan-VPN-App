@@ -10,6 +10,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.yohan.vpn.databinding.ActivityMainBinding
+import com.yohan.vpn.data.AccountResult
 import com.yohan.vpn.data.ApiClient
 import com.yohan.vpn.data.LocalCache
 import com.yohan.vpn.data.Profile
@@ -18,6 +19,9 @@ import com.yohan.vpn.vpn.YohanVpnService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
@@ -29,16 +33,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private var servers: List<ServerInfo> = emptyList()
     private val profiles = Profile.values()
-    private var pendingAccount: com.yohan.vpn.data.AccountResult? = null
+    private var pendingAccount: AccountResult? = null
     private var pendingProfile: Profile? = null
+    private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-
-        // امسح الحسابات القديمة الخاطئة مرة واحدة
-        LocalCache.clearAccount(this)
 
         binding.spinnerProfile.adapter = ArrayAdapter(
             this, android.R.layout.simple_spinner_dropdown_item,
@@ -51,44 +53,67 @@ class MainActivity : AppCompatActivity() {
         YohanVpnService.onStatus = { msg ->
             runOnUiThread {
                 binding.tvStatus.text = msg
-                appendLog(msg)
+                injectorLog(msg)
             }
         }
-        binding.tvStatus.text = YohanVpnService.statusText
 
-        val cached = LocalCache.loadServers(this)
-        if (cached.isNotEmpty()) {
-            servers = cached
-            refreshServerSpinner()
-            binding.tvStatus.text = "جاهز"
-            appendLog("سيرفرات محفوظة: ${cached.size}")
-        }
-        loadServers()
+        // عرض الحالة
+        binding.tvStatus.text = if (YohanVpnService.isRunning) YohanVpnService.statusText else "جاهز"
+
+        // تحميل سيرفرات + تجهيز حساب بصمت
+        bootstrap()
     }
 
-    private fun loadServers() {
+    private fun bootstrap() {
         lifecycleScope.launch {
+            // 1) سيرفرات من الكاش فوراً
+            val cached = LocalCache.loadServers(this@MainActivity)
+            if (cached.isNotEmpty()) {
+                servers = cached
+                refreshServerSpinner()
+            }
+
+            // 2) تحديث من الشبكة
             try {
                 val list = withContext(Dispatchers.IO) { ApiClient.listServers(API) }
                 if (list.isNotEmpty()) {
                     servers = list
                     LocalCache.saveServers(this@MainActivity, list)
                     refreshServerSpinner()
-                    binding.tvStatus.text = "جاهز"
-                    appendLog("تم تحديث السيرفرات (${list.size})")
-                } else if (servers.isEmpty()) {
-                    servers = fallbackServers()
-                    LocalCache.saveServers(this@MainActivity, servers)
-                    refreshServerSpinner()
-                    binding.tvStatus.text = "جاهز"
                 }
             } catch (_: Exception) {
                 if (servers.isEmpty()) {
-                    servers = LocalCache.loadServers(this@MainActivity).ifEmpty { fallbackServers() }
+                    servers = fallbackServers()
+                    LocalCache.saveServers(this@MainActivity, servers)
                     refreshServerSpinner()
                 }
-                binding.tvStatus.text = "جاهز"
             }
+
+            binding.tvStatus.text = "تم تحديث السيرفرات"
+            injectorLog("Servers updated (${servers.size})")
+
+            // 3) إنشاء/تجهيز حساب للسيرفر الأول بصمت (بدون رسائل إنشاء)
+            if (servers.isNotEmpty()) {
+                prepareAccountSilent(servers[0].key)
+            }
+        }
+    }
+
+    /** تجهيز حساب في الخلفية — بدون "جاري إنشاء حساب" */
+    private suspend fun prepareAccountSilent(serverKey: String) {
+        val existing = LocalCache.loadValidAccount(this, serverKey)
+        if (existing != null) return
+        try {
+            withContext(Dispatchers.IO) {
+                val uid = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+                    ?: "android-user"
+                val acc = ApiClient.createAccount(API, serverKey, uid)
+                if (acc.ok) {
+                    LocalCache.saveAccount(this@MainActivity, acc, serverKey)
+                }
+            }
+        } catch (_: Exception) {
+            // صامت
         }
     }
 
@@ -124,34 +149,33 @@ class MainActivity : AppCompatActivity() {
         val profile = profiles[binding.spinnerProfile.selectedItemPosition]
 
         binding.btnConnect.isEnabled = false
-        appendLog("السيرفر: ${server.name}")
-        appendLog("البروفايل: ${profile.label}")
 
         lifecycleScope.launch {
             try {
+                injectorLog("SSH · Performance Mode · Proxy -> Target")
+                injectorLog("Profile: ${profile.label}")
+
                 var account = LocalCache.loadValidAccount(this@MainActivity, server.key)
-                if (account != null) {
-                    appendLog("حساب محفوظ: ${account.username}")
-                } else {
-                    appendLog("إنشاء حساب جديد...")
+                if (account == null) {
+                    // صامت — بدون رسالة إنشاء
                     account = withContext(Dispatchers.IO) {
                         val uid = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
                             ?: "android-user"
                         ApiClient.createAccount(API, server.key, uid)
                     }
                     if (!account.ok) {
-                        appendLog("فشل الإنشاء: ${account.error}")
+                        injectorLog("Failed: ${account.error}")
                         toast(account.error ?: "فشل")
                         return@launch
                     }
                     LocalCache.saveAccount(this@MainActivity, account, server.key)
-                    appendLog("تم حفظ الحساب")
                 }
 
-                appendLog("المضيف: ${account.host}:${account.sshPort}")
-                appendLog("المستخدم: ${account.username}")
-                appendLog("البروكسي: ${account.proxyHost}:${account.proxyPort}")
-                appendLog("البايلود Host: ${profile.payloadHost}")
+                injectorLog("Target: ${account.username}:@${account.host}:${account.sshPort}")
+                injectorLog("Proxy: ${account.proxyHost}:${account.proxyPort}")
+                injectorLog(
+                    "Payload: CONNECT [host_port] [protocol][crlf]Host: ${profile.payloadHost}[crlf][crlf]"
+                )
 
                 val prepare = VpnService.prepare(this@MainActivity)
                 if (prepare != null) {
@@ -163,7 +187,7 @@ class MainActivity : AppCompatActivity() {
                     launchVpn(account, profile)
                 }
             } catch (e: Exception) {
-                appendLog("خطأ: ${e.message}")
+                injectorLog("Error: ${e.message}")
                 toast(e.message ?: "error")
             } finally {
                 binding.btnConnect.isEnabled = true
@@ -179,11 +203,11 @@ class MainActivity : AppCompatActivity() {
             val p = pendingProfile
             if (a != null && p != null) launchVpn(a, p)
         } else if (requestCode == REQ_VPN) {
-            appendLog("تم رفض صلاحية VPN")
+            injectorLog("VPN permission denied")
         }
     }
 
-    private fun launchVpn(account: com.yohan.vpn.data.AccountResult, profile: Profile) {
+    private fun launchVpn(account: AccountResult, profile: Profile) {
         val i = Intent(this, YohanVpnService::class.java).apply {
             action = YohanVpnService.ACTION_CONNECT
             putExtra(YohanVpnService.EXTRA_HOST, account.host)
@@ -195,18 +219,23 @@ class MainActivity : AppCompatActivity() {
             putExtra(YohanVpnService.EXTRA_PAYLOAD_HOST, profile.payloadHost)
         }
         startForegroundService(i)
-        appendLog("بدء الاتصال...")
+        injectorLog("Connecting...")
     }
 
     private fun disconnect() {
         startService(Intent(this, YohanVpnService::class.java).apply {
             action = YohanVpnService.ACTION_DISCONNECT
         })
-        appendLog("قطع الاتصال...")
+        injectorLog("Disconnecting...")
     }
 
-    private fun appendLog(m: String) {
-        binding.tvLog.append("• $m\n")
+    /** سجل بأسلوب HTTP Injector / DarkTunnel */
+    private fun injectorLog(msg: String) {
+        val t = timeFmt.format(Date())
+        binding.tvLog.append("[$t] $msg\n")
+        binding.scrollLog.post {
+            binding.scrollLog.fullScroll(android.view.View.FOCUS_DOWN)
+        }
     }
 
     private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
